@@ -1,10 +1,9 @@
 use std::io::{self, Write, Read, ErrorKind};
 use crate::ser::{Writeable, Readable};
 
-
 /// BigSize is identical to the CompactSize encoding used in bitcoin, but replaces the 
 /// little-endian encoding of multi-byte values with big-endian.
-struct BigSize(u64);
+pub struct BigSize(u64);
 
 impl Writeable for BigSize {
     fn write<W: Write>(&self, writer: &mut W) -> Result<usize, io::Error> {
