@@ -1,9 +1,11 @@
+use core::fmt;
 use std::io::{self, Write, Read, ErrorKind};
-use crate::ser::{Writeable, Readable};
+use crate::ser::{Writeable, Readable, DecodeError};
 
 /// BigSize is identical to the CompactSize encoding used in bitcoin, but replaces the 
 /// little-endian encoding of multi-byte values with big-endian.
-pub struct BigSize(u64);
+#[derive(Debug)]
+pub struct BigSize(pub u64);
 
 impl Writeable for BigSize {
     fn write<W: Write>(&self, writer: &mut W) -> Result<usize, io::Error> {
@@ -25,30 +27,36 @@ impl Writeable for BigSize {
 }
 
 impl Readable for BigSize {
-	fn read<R: Read>(reader: &mut R) -> Result<Self, io::Error> {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
         let size: u8 = Readable::read(reader)?;
 
         if size == 0xfd {
             let x: u16 = Readable::read(reader)?;
             if x < 0xfd {
-                return Err(io::Error::new(ErrorKind::InvalidData, "non canonical"))
+                return Err(DecodeError::Io(ErrorKind::InvalidData))
             }
             Ok(BigSize(x as u64))
         } else if size == 0xfe {
             let x: u32 = Readable::read(reader)?;
             if x < 0x10000 {
-                return Err(io::Error::new(ErrorKind::InvalidData, "non canonical"))
+                return Err(DecodeError::Io(ErrorKind::InvalidData))
             }
             Ok(BigSize(x as u64))
         } else if size == 0xff {
             let x: u64 = Readable::read(reader)?;
             if x < 0x100000000 {
-                return Err(io::Error::new(ErrorKind::InvalidData, "non canonical"))
+                return Err(DecodeError::Io(ErrorKind::InvalidData))
             }
             Ok(BigSize(x as u64))
         } else {
             Ok(BigSize(size as u64))
         }
+    }
+}
+
+impl fmt::LowerHex for BigSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:x}", self.0)
     }
 }
 

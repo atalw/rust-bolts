@@ -1,9 +1,15 @@
+use std::fmt;
+use std::io::{self, Read};
+use std::str::FromStr;
 use crate::bigsize::BigSize;
+use crate::ser::{Readable, FixedLengthReader, DecodeError};
 
 /// A tlv_stream is a series of (possibly zero) tlv_records, represented as the concatenation of
 /// the encoded tlv_records.
+#[derive(Debug)]
 struct TLVStream(Vec<TLVRecord>);
 
+#[derive(Debug)]
 struct TLVRecord {
     /// It functions as a message-specific, 64-bit identifier for the tlv_record determining how
     /// the contents of value should be decoded. type identifiers below 2^16 are reserved for use
@@ -14,11 +20,168 @@ struct TLVRecord {
     length: BigSize,
     /// Depends on `type`, and should be encoded or decoded according to the message-specific 
     /// format determined by `type`.
-    value: Vec<u8>
+    value: Option<Value>
+}
+
+#[derive(Debug)]
+enum Value {
+    Amount(u64),
+    ShortChannelId([u8; 8]),
+    Value3(Value3),
+    CLTVExpiry(u16),
+    Unknown(Vec<u8>),
+}
+
+#[derive(Debug)]
+struct Value3 {
+    point: Vec<u8>, // point
+    amount_msat_1: u64,
+    amount_msat_2: u64,
+}
+
+impl Readable for TLVStream {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+        let mut tlv_stream: Vec<TLVRecord> = Vec::new();
+        // while let Ok(record) = Readable::read(reader) {
+        //     println!("{:?}", record);
+        // }
+        loop {
+            let record: TLVRecord = match Readable::read(reader) {
+                Ok(r) => r,
+                Err(DecodeError::ShortRead) => break,
+                Err(e) => panic!("{}", e)
+            };
+            match record.value {
+                Some(Value::Unknown(_)) => continue,
+                _ => tlv_stream.push(record)
+            }
+        }
+
+        Ok(TLVStream(tlv_stream))
+    }
+}
+
+impl fmt::Display for TLVStream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for record in &self.0 {
+            write!(f, "{}", record)?;
+        }
+        Ok(())
+    }
+}
+
+macro_rules! decode_tlv1 {
+    ($stream: expr) => {{
+        match $stream.try_into().map_err(|_| DecodeError::ShortRead) {
+            Ok(b) => Ok(Some(Value::Amount(u64::from_be_bytes(b)))),
+            Err(e) => Err(e)
+        }
+    }}
+}
+
+macro_rules! decode_tlv2 {
+    ($stream: expr) => {{
+        match $stream.try_into().map_err(|_| DecodeError::ShortRead) {
+            Ok(b) => Ok(Some(Value::ShortChannelId(b))),
+            Err(e) => Err(e)
+        }
+    }}
+}
+
+macro_rules! decode_tlv3 {
+    ($stream: expr) => {{
+        // TODO
+        let bytes: [u8; 2] = $stream.try_into().map_err(|_| DecodeError::ShortRead)?;
+        Ok(Some(Value::CLTVExpiry(u16::from_be_bytes(bytes))))
+    }}
+}
+
+macro_rules! decode_tlv4 {
+    ($stream: expr) => {{
+        match $stream.try_into().map_err(|_| DecodeError::ShortRead) {
+            Ok(b) => Ok(Some(Value::CLTVExpiry(u16::from_be_bytes(b)))),
+            Err(e) => Err(e)
+        }
+    }}
+}
+
+impl Readable for TLVRecord {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+        let record_type: BigSize = Readable::read(reader)?;
+        let length: BigSize = Readable::read(reader)?;
+        let v: Vec<u8> = FixedLengthReader::read(reader, length.0 as usize)?;
+
+        let value = match record_type.0 {
+            1 => decode_tlv1!(v),
+            2 => decode_tlv2!(v),
+            3 => decode_tlv3!(v),
+            4 => decode_tlv4!(v),
+            x if x % 2 == 0 => Err(DecodeError::Io(io::ErrorKind::Unsupported)),
+            _ => Ok(Some(Value::Unknown(v))),
+        };
+
+        println!("hello? {:02x} {}", record_type.0, length.0);
+
+        match value {
+            Err(DecodeError::ShortRead) => {
+                if length.0 == 0 {
+                    println!("here");
+                    Ok(TLVRecord {
+                        record_type,
+                        length,
+                        value: None
+                    })
+                } else {
+                    Err(DecodeError::ShortRead)
+                }
+            },
+            Err(e) => Err(e),
+            Ok(value) => {
+                Ok(TLVRecord {
+                    record_type,
+                    length,
+                    value
+                })
+            }
+        }
+
+
+    }
+}
+
+
+impl fmt::Display for TLVRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:02x}", self.record_type.0)?;
+        write!(f, "{:02x}", self.length.0)?;
+        if let Some(v) = &self.value {
+            write!(f, "{:02x}", v)?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::LowerHex for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Amount(v) => write!(f, "{:02x}", v),
+            // Value::ShortChannelId(scid) => write!(f, "{:x}", scid.join("")),
+            Value::ShortChannelId(scid) => todo!(),
+            Value::Value3(v) => todo!(),
+            Value::CLTVExpiry(v) => todo!(),
+            Value::Unknown(b) => todo!(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
+    use crate::ser::Readable;
+
+    use super::TLVStream;
+
 
     /// The following TLV streams in either namespace should correctly decode, and be ignored
     #[test]
@@ -32,6 +195,12 @@ mod tests {
             concat!("fe02000001", "00"),
             concat!("ff0200000000000001", "00"),
         ];
+
+        for vector in test_vectors {
+            let mut buff = Cursor::new(hex::decode(vector).expect("input"));
+            let stream: TLVStream = Readable::read(&mut buff).expect("no failure");
+            assert_eq!(stream.to_string(), "");
+        }
     }
 
     /// The following TLV streams in `n1` namespace should correctly decode, with the values given
@@ -52,6 +221,12 @@ mod tests {
             "tlv3 node_id=023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb amount_msat_1=1 amount_msat_2=2"),
             (concat!("fd00fe", "02", "0226"), "tlv4 cltv_delta=550"),
         ];
+
+        for vector in test_vectors {
+            let mut buff = Cursor::new(hex::decode(vector.0).expect("input"));
+            let stream: TLVStream = Readable::read(&mut buff).expect("no failure");
+            assert_eq!(stream.to_string(), vector.0);
+        }
     }
 
     #[test]
