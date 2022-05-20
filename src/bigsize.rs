@@ -24,6 +24,23 @@ impl Writeable for BigSize {
             (x as u64).write(writer)
         }
     }
+
+    fn write_fmt<W: fmt::Write>(&self, writer: &mut W) -> Result<(), fmt::Error> {
+        let x = self.0;
+
+        if x < 0xfd {
+            write!(writer, "{:02x}", x as u8)
+        } else if x < 0x10000 {
+            write!(writer, "{:02x}", 0xfdu8)?;
+            write!(writer, "{:04x}", x as u16)
+        } else if x < 0x100000000 {
+            write!(writer, "{:02x}", 0xfeu8)?;
+            write!(writer, "{:08x}", x as u32)
+        } else {
+            write!(writer, "{:02x}", 0xffu8)?;
+            write!(writer, "{:016x}", x as u64)
+        }
+    }
 }
 
 impl Readable for BigSize {

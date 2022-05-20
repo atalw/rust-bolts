@@ -29,7 +29,8 @@ impl fmt::Display for DecodeError {
 
 /// Objects that can be encoded into a BOLT specific format
 pub trait Writeable {
-    fn write<W: Write>(&self, writer: &mut W) -> Result<usize, io::Error>;
+    fn write<W: io::Write>(&self, writer: &mut W) -> Result<usize, io::Error>;
+    fn write_fmt<W: fmt::Write>(&self, writer: &mut W) -> Result<(), fmt::Error>;
 
     fn encode(&self) -> Vec<u8> {
         let mut msg = Vec::new();
@@ -47,6 +48,15 @@ macro_rules! impl_writeable_int_be {
                     Ok(n) => Ok(n),
                     Err(e) => panic!("{}", e)
                 }
+            }
+
+            fn write_fmt<W: fmt::Write>(&self, writer: &mut W) -> Result<(), fmt::Error> {
+                todo!()
+                // let bytes = self.to_be_bytes();
+                // match writer.write(&bytes) {
+                //     Ok(n) => {},
+                //     Err(e) => panic!("{}", e)
+                // }
             }
         }
 	};
@@ -80,14 +90,19 @@ impl_readable_int_be!(u32, 4);
 impl_readable_int_be!(u64, 8);
 
 /// Read a fixed length of bytes
-pub trait FixedLengthReader where Self: Sized {
+pub trait FixedLengthReadable where Self: Sized {
 	fn read<R: Read>(reader: &mut R, length: usize) -> Result<Self, DecodeError>;
 }
 
-impl FixedLengthReader for Vec<u8> {
+impl FixedLengthReadable for Vec<u8> {
 	fn read<R: Read>(reader: &mut R, length: usize) -> Result<Self, DecodeError> {
         let mut bytes = vec![0; length];
         reader.read_exact(&mut bytes).map_err(|_| DecodeError::ShortRead)?;
         Ok(bytes)
+        // if length == 0 { Ok(bytes) }
+        // else {
+        //     bytes = bytes.iter().map(|&x| hex::decode(format!("{:02x}", x)).unwrap()[0]).collect();
+        //     Ok(bytes)
+        // }
     }
 }

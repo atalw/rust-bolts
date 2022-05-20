@@ -1,8 +1,7 @@
 use std::fmt;
 use std::io::{self, Read};
-use std::str::FromStr;
 use crate::bigsize::BigSize;
-use crate::ser::{Readable, FixedLengthReader, DecodeError};
+use crate::ser::{Readable, FixedLengthReadable, DecodeError, Writeable};
 
 /// A tlv_stream is a series of (possibly zero) tlv_records, represented as the concatenation of
 /// the encoded tlv_records.
@@ -34,17 +33,31 @@ enum Value {
 
 #[derive(Debug)]
 struct Value3 {
-    point: Vec<u8>, // point
+    point: Point,
     amount_msat_1: u64,
     amount_msat_2: u64,
+}
+
+#[derive(Debug)]
+struct Point([u8; 33]);
+
+impl Value3 {
+    fn new(stream: Vec<u8>) -> Result<Self, DecodeError> {
+        let point: Point = Point(stream[..33].try_into().map_err(|_| DecodeError::ShortRead)?);
+        let amount_msat_1: u64 = u64::from_be_bytes(stream[33..41].try_into().map_err(|_| DecodeError::ShortRead)?);
+        let amount_msat_2: u64 = u64::from_be_bytes(stream[41..49].try_into().map_err(|_| DecodeError::ShortRead)?);
+
+        Ok(Value3 {
+            point,
+            amount_msat_1,
+            amount_msat_2,
+        })
+    }
 }
 
 impl Readable for TLVStream {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
         let mut tlv_stream: Vec<TLVRecord> = Vec::new();
-        // while let Ok(record) = Readable::read(reader) {
-        //     println!("{:?}", record);
-        // }
         loop {
             let record: TLVRecord = match Readable::read(reader) {
                 Ok(r) => r,
@@ -72,9 +85,16 @@ impl fmt::Display for TLVStream {
 
 macro_rules! decode_tlv1 {
     ($stream: expr) => {{
-        match $stream.try_into().map_err(|_| DecodeError::ShortRead) {
-            Ok(b) => Ok(Some(Value::Amount(u64::from_be_bytes(b)))),
-            Err(e) => Err(e)
+        match $stream.len() {
+            0 => { Err(DecodeError::ShortRead) },
+            n if n <= 8 => {
+                let mut res = [0; 8];
+                for (i, el) in $stream.iter().enumerate() {
+                    res[8 - n + i] = *el;
+                }
+                Ok(Some(Value::Amount(u64::from_be_bytes(res))))
+            },
+            _ => { Err(DecodeError::ShortRead) },
         }
     }}
 }
@@ -90,9 +110,7 @@ macro_rules! decode_tlv2 {
 
 macro_rules! decode_tlv3 {
     ($stream: expr) => {{
-        // TODO
-        let bytes: [u8; 2] = $stream.try_into().map_err(|_| DecodeError::ShortRead)?;
-        Ok(Some(Value::CLTVExpiry(u16::from_be_bytes(bytes))))
+        Ok(Some(Value::Value3(Value3::new($stream)?)))
     }}
 }
 
@@ -109,23 +127,20 @@ impl Readable for TLVRecord {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
         let record_type: BigSize = Readable::read(reader)?;
         let length: BigSize = Readable::read(reader)?;
-        let v: Vec<u8> = FixedLengthReader::read(reader, length.0 as usize)?;
+        let v: Vec<u8> = FixedLengthReadable::read(reader, length.0 as usize)?;
 
         let value = match record_type.0 {
             1 => decode_tlv1!(v),
             2 => decode_tlv2!(v),
             3 => decode_tlv3!(v),
-            4 => decode_tlv4!(v),
+            254 => decode_tlv4!(v),
             x if x % 2 == 0 => Err(DecodeError::Io(io::ErrorKind::Unsupported)),
             _ => Ok(Some(Value::Unknown(v))),
         };
 
-        println!("hello? {:02x} {}", record_type.0, length.0);
-
         match value {
             Err(DecodeError::ShortRead) => {
                 if length.0 == 0 {
-                    println!("here");
                     Ok(TLVRecord {
                         record_type,
                         length,
@@ -144,18 +159,17 @@ impl Readable for TLVRecord {
                 })
             }
         }
-
-
     }
 }
 
 
 impl fmt::Display for TLVRecord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:02x}", self.record_type.0)?;
-        write!(f, "{:02x}", self.length.0)?;
+        self.record_type.write_fmt(f)?;
+        self.length.write_fmt(f)?;
         if let Some(v) = &self.value {
-            write!(f, "{:02x}", v)?;
+            let n: usize = (self.length.0 * 2) as usize;
+            write!(f, "{:01$x}", v, n)?;
         }
         Ok(())
     }
@@ -164,11 +178,23 @@ impl fmt::Display for TLVRecord {
 impl fmt::LowerHex for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Value::Amount(v) => write!(f, "{:02x}", v),
-            // Value::ShortChannelId(scid) => write!(f, "{:x}", scid.join("")),
-            Value::ShortChannelId(scid) => todo!(),
-            Value::Value3(v) => todo!(),
-            Value::CLTVExpiry(v) => todo!(),
+            Value::Amount(v) => Ok(v.fmt(f)?),
+            Value::ShortChannelId(scid) => {
+                for byte in scid {
+                    write!(f, "{:02x}", byte)?;
+                }
+                Ok(())
+            }
+            Value::Value3(v) => {
+                for byte in v.point.0 {
+                    write!(f, "{:02x}", byte)?;
+                }
+
+                write!(f, "{:016x}", v.amount_msat_1)?;
+                write!(f, "{:016x}", v.amount_msat_2)?;
+                Ok(())
+            }
+            Value::CLTVExpiry(v) => Ok(v.fmt(f)?),
             Value::Unknown(b) => todo!(),
         }
     }
