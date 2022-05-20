@@ -1,10 +1,11 @@
 use std::{io::{self, Write, Read}, fmt};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum DecodeError {
     Io(io::ErrorKind),
     TryFrom,
     ShortRead,
+    InvalidData,
 }
 
 impl std::error::Error for DecodeError {}
@@ -23,6 +24,7 @@ impl fmt::Display for DecodeError {
             DecodeError::Io(e) => write!(f, "{:?}", e),
             DecodeError::TryFrom => write!(f, "conversion error"),
             DecodeError::ShortRead => write!(f, "short read"),
+            DecodeError::InvalidData => write!(f, "invalid data"),
         }
     }
 }
@@ -50,13 +52,8 @@ macro_rules! impl_writeable_int_be {
                 }
             }
 
-            fn write_fmt<W: fmt::Write>(&self, writer: &mut W) -> Result<(), fmt::Error> {
+            fn write_fmt<W: fmt::Write>(&self, _writer: &mut W) -> Result<(), fmt::Error> {
                 todo!()
-                // let bytes = self.to_be_bytes();
-                // match writer.write(&bytes) {
-                //     Ok(n) => {},
-                //     Err(e) => panic!("{}", e)
-                // }
             }
         }
 	};
@@ -99,10 +96,5 @@ impl FixedLengthReadable for Vec<u8> {
         let mut bytes = vec![0; length];
         reader.read_exact(&mut bytes).map_err(|_| DecodeError::ShortRead)?;
         Ok(bytes)
-        // if length == 0 { Ok(bytes) }
-        // else {
-        //     bytes = bytes.iter().map(|&x| hex::decode(format!("{:02x}", x)).unwrap()[0]).collect();
-        //     Ok(bytes)
-        // }
     }
 }

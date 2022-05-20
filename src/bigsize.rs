@@ -50,21 +50,24 @@ impl Readable for BigSize {
         if size == 0xfd {
             let x: u16 = Readable::read(reader)?;
             if x < 0xfd {
-                return Err(DecodeError::Io(ErrorKind::InvalidData))
+                Err(DecodeError::InvalidData)
+            } else {
+                Ok(BigSize(x as u64))
             }
-            Ok(BigSize(x as u64))
         } else if size == 0xfe {
             let x: u32 = Readable::read(reader)?;
             if x < 0x10000 {
-                return Err(DecodeError::Io(ErrorKind::InvalidData))
+                Err(DecodeError::InvalidData)
+            } else {
+                Ok(BigSize(x as u64))
             }
-            Ok(BigSize(x as u64))
         } else if size == 0xff {
             let x: u64 = Readable::read(reader)?;
             if x < 0x100000000 {
-                return Err(DecodeError::Io(ErrorKind::InvalidData))
+                Err(DecodeError::InvalidData)
+            } else {
+                Ok(BigSize(x as u64))
             }
-            Ok(BigSize(x as u64))
         } else {
             Ok(BigSize(size as u64))
         }

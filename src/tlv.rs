@@ -61,8 +61,11 @@ impl Readable for TLVStream {
         loop {
             let record: TLVRecord = match Readable::read(reader) {
                 Ok(r) => r,
-                Err(DecodeError::ShortRead) => break,
-                Err(e) => panic!("{}", e)
+                Err(DecodeError::ShortRead) => {
+                    if !tlv_stream.is_empty() { break }
+                    else { return Err(DecodeError::ShortRead) }
+                }
+                Err(e) => return Err(e)
             };
             match record.value {
                 Some(Value::Unknown(_)) => continue,
@@ -128,6 +131,7 @@ impl Readable for TLVRecord {
         let record_type: BigSize = Readable::read(reader)?;
         let length: BigSize = Readable::read(reader)?;
         let v: Vec<u8> = FixedLengthReadable::read(reader, length.0 as usize)?;
+
 
         let value = match record_type.0 {
             1 => decode_tlv1!(v),
@@ -202,9 +206,9 @@ impl fmt::LowerHex for Value {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, self};
 
-    use crate::ser::Readable;
+    use crate::ser::{Readable, DecodeError};
 
     use super::TLVStream;
 
@@ -213,7 +217,7 @@ mod tests {
     #[test]
     fn tlv_stream_decode_success_ignored() {
         let test_vectors = [
-            "",
+            "", // TODO: handle tlv_stream read break case
             concat!("21", "00"),
             concat!("fd0201", "00"),
             concat!("fd00fd", "00"),
@@ -223,6 +227,7 @@ mod tests {
         ];
 
         for vector in test_vectors {
+            println!("{}", vector);
             let mut buff = Cursor::new(hex::decode(vector).expect("input"));
             let stream: TLVStream = Readable::read(&mut buff).expect("no failure");
             assert_eq!(stream.to_string(), "");
@@ -257,23 +262,29 @@ mod tests {
 
     #[test]
     fn tlv_stream_decode_failure_any_namespace() {
-        let test_vectors = [
-            ("fd", "type truncated"),
-            ("fd01", "type truncated"),
-            (concat!("fd0001", "00"), "not minimally encoded type"),
-            ("fd0101", "missing length"),
-            (concat!("0f", "fd"), "(length truncated)"),
-            (concat!("0f", "fd26"), "(length truncated)"),
-            (concat!("0f", "fd2602"), "missing value"),
-            (concat!("0f", "fd0001", "00"), "not minimally encoded length"),
-            (concat!("0f", "fd0201", "0000000000000000000000000000000000000000000000000000000000000\
-            000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
-            000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
-            000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
-            000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
-            000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
-            00000000000000000000"), "value truncated"),
-        ];
+        macro_rules! do_test {
+            ($stream: expr, $err: expr) => {
+                let mut buff = Cursor::new(hex::decode($stream).expect("input"));
+                let expected: Result<TLVStream, DecodeError> = Readable::read(&mut buff);
+                assert_eq!(expected.unwrap_err(), $err);
+            };
+        }
+        do_test!("fd", DecodeError::ShortRead);
+        do_test!("fd01", DecodeError::ShortRead);
+        do_test!(concat!("fd0001", "00"), DecodeError::InvalidData);
+        do_test!("fd0101", DecodeError::ShortRead);
+        do_test!(concat!("0f", "fd"), DecodeError::ShortRead);
+        do_test!(concat!("0f", "fd26"), DecodeError::ShortRead);
+        do_test!(concat!("0f", "fd2602"), DecodeError::ShortRead);
+        do_test!(concat!("0f", "fd0001", "00"), DecodeError::InvalidData);
+        do_test!(concat!("0f", "fd0201", "000000000000000000000000000000000000000000000000000000000\
+        0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
+        0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
+        0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
+        0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
+        0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
+        0000"), DecodeError::ShortRead);
+
     }
 
     #[test]
@@ -284,6 +295,12 @@ mod tests {
             (concat!("fe01000002", "00"), "unknown even type."),
             (concat!("ff0100000000000002", "00"), "unknown even type."),
         ];
+
+        for vector in test_vectors {
+            let mut buff = Cursor::new(hex::decode(vector.0).expect("input"));
+            let stream: TLVStream = Readable::read(&mut buff).expect("no failure");
+            assert_eq!(stream.to_string(), vector.0);
+        }
     }
 
     #[test]
