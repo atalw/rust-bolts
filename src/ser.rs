@@ -1,6 +1,6 @@
 use std::{io::{self, Write, Read}, fmt};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum DecodeError {
     Io(io::ErrorKind),
     ShortRead,

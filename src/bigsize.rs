@@ -82,7 +82,6 @@ impl fmt::LowerHex for BigSize {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     use std::io::Cursor;
 
@@ -91,7 +90,7 @@ mod tests {
         Title(String),
         Number(u64),
         Hex(String),
-        Error(Option<String>)
+        Error(Option<DecodeError>)
     }
 
     #[test]
@@ -203,73 +202,73 @@ mod tests {
                 Value::Title("two byte not canonical".into()),
                 Value::Number(0),
                 Value::Hex("fd00fc".into()),
-                Value::Error(Some("decoded bigsize is not canonical".into()))
+                Value::Error(Some(DecodeError::InvalidData)),
             ],
             [
                 Value::Title("four byte not canonical".into()),
                 Value::Number(0),
                 Value::Hex("fe0000ffff".into()),
-                Value::Error(Some("decoded bigsize is not canonical".into()))
+                Value::Error(Some(DecodeError::InvalidData)),
             ],
             [
                 Value::Title("eight byte not canonical".into()),
                 Value::Number(0),
                 Value::Hex("ff00000000ffffffff".into()),
-                Value::Error(Some("decoded bigsize is not canonical".into()))
+                Value::Error(Some(DecodeError::InvalidData)),
             ],
             [
                 Value::Title("two byte short read".into()),
                 Value::Number(0),
                 Value::Hex("fd00".into()),
-                Value::Error(Some("unexpected EOF".into()))
+                Value::Error(Some(DecodeError::ShortRead)),
             ],
             [
                 Value::Title("four byte short read".into()),
                 Value::Number(0),
                 Value::Hex("feffff".into()),
-                Value::Error(Some("unexpected EOF".into()))
+                Value::Error(Some(DecodeError::ShortRead)),
             ],
             [
                 Value::Title("eight byte short read".into()),
                 Value::Number(0),
                 Value::Hex("ffffffffff".into()),
-                Value::Error(Some("unexpected EOF".into()))
+                Value::Error(Some(DecodeError::ShortRead)),
             ],
             [
                 Value::Title("one byte no read".into()),
                 Value::Number(0),
                 Value::Hex("".into()),
-                Value::Error(Some("EOF".into()))
+                Value::Error(Some(DecodeError::ShortRead)),
             ],
             [
                 Value::Title("two byte no read".into()),
                 Value::Number(0),
                 Value::Hex("fd".into()),
-                Value::Error(Some("unexpected EOF".into()))
+                Value::Error(Some(DecodeError::ShortRead)),
             ],
             [
                 Value::Title("four byte no read".into()),
                 Value::Number(0),
                 Value::Hex("fe".into()),
-                Value::Error(Some("unexpected EOF".into()))
+                Value::Error(Some(DecodeError::ShortRead)),
             ],
             [
                 Value::Title("eight byte no read".into()),
                 Value::Number(0),
                 Value::Hex("ff".into()),
-                Value::Error(Some("unexpected EOF".into()))
+                Value::Error(Some(DecodeError::ShortRead)),
             ]
         ];
 
         for vector in test_vectors {
-            if let (Value::Number(val), Value::Hex(input), Value::Error(_)) = 
+            if let (Value::Number(val), Value::Hex(input), Value::Error(err)) = 
                 (vector[1].clone(), vector[2].clone(), vector[3].clone()) {
 
                 let bytes = hex::decode(input.clone()).expect("parse test input");
                 let mut buff = Cursor::new(bytes);
                 let bigsize = match BigSize::read(&mut buff) {
                     Ok(bs) => bs,
-                    Err(_) => continue
+                    Err(e) => { assert_eq!(Some(e), err); continue }
                 };
 
                 assert_eq!(bigsize.0, val);
