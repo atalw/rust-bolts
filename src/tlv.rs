@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io::{self, Read};
 use crate::bigsize::BigSize;
-use crate::ser::{Readable, FixedLengthReadable, DecodeError, Writeable};
+use crate::ser::{Readable, FixedLengthReadable, DecodeError, Writeable, ReadTrackingReader};
 
 /// A tlv_stream is a series of (possibly zero) tlv_records, represented as the concatenation of
 /// the encoded tlv_records.
@@ -59,10 +59,11 @@ impl Readable for TLVStream {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
         let mut tlv_stream: Vec<TLVRecord> = Vec::new();
         loop {
-            let record: TLVRecord = match Readable::read(reader) {
+            let mut tracking_reader = ReadTrackingReader::new(&mut *reader);
+            let record: TLVRecord = match Readable::read(&mut tracking_reader) {
                 Ok(r) => r,
                 Err(DecodeError::ShortRead) => {
-                    if !tlv_stream.is_empty() { break }
+                    if !tracking_reader.have_read { break }
                     else { return Err(DecodeError::ShortRead) }
                 }
                 Err(e) => return Err(e)
@@ -97,7 +98,7 @@ macro_rules! decode_tlv1 {
                 }
                 Ok(Some(Value::Amount(u64::from_be_bytes(res))))
             },
-            _ => { Err(DecodeError::ShortRead) },
+            _ => { Err(DecodeError::InvalidData) },
         }
     }}
 }
@@ -132,13 +133,12 @@ impl Readable for TLVRecord {
         let length: BigSize = Readable::read(reader)?;
         let v: Vec<u8> = FixedLengthReadable::read(reader, length.0 as usize)?;
 
-
         let value = match record_type.0 {
             1 => decode_tlv1!(v),
             2 => decode_tlv2!(v),
             3 => decode_tlv3!(v),
             254 => decode_tlv4!(v),
-            x if x % 2 == 0 => Err(DecodeError::Io(io::ErrorKind::Unsupported)),
+            x if x % 2 == 0 => Err(DecodeError::UnknownRequiredFeature),
             _ => Ok(Some(Value::Unknown(v))),
         };
 
@@ -193,7 +193,6 @@ impl fmt::LowerHex for Value {
                 for byte in v.point.0 {
                     write!(f, "{:02x}", byte)?;
                 }
-
                 write!(f, "{:016x}", v.amount_msat_1)?;
                 write!(f, "{:016x}", v.amount_msat_2)?;
                 Ok(())
@@ -206,10 +205,8 @@ impl fmt::LowerHex for Value {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Cursor, self};
-
+    use std::io::Cursor;
     use crate::ser::{Readable, DecodeError};
-
     use super::TLVStream;
 
 
@@ -217,7 +214,7 @@ mod tests {
     #[test]
     fn tlv_stream_decode_success_ignored() {
         let test_vectors = [
-            "", // TODO: handle tlv_stream read break case
+            "",
             concat!("21", "00"),
             concat!("fd0201", "00"),
             concat!("fd00fd", "00"),
@@ -284,54 +281,61 @@ mod tests {
         0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
         0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
         0000"), DecodeError::ShortRead);
-
     }
 
     #[test]
     fn tlv_stream_decode_failure_either_namespace() {
         let test_vectors = [
-            (concat!("12", "00"), "unknown even type."),
-            (concat!("fd0102", "00"), "unknown even type."),
-            (concat!("fe01000002", "00"), "unknown even type."),
-            (concat!("ff0100000000000002", "00"), "unknown even type."),
+            (concat!("12", "00"), DecodeError::UnknownRequiredFeature),
+            (concat!("fd0102", "00"), DecodeError::UnknownRequiredFeature),
+            (concat!("fe01000002", "00"), DecodeError::UnknownRequiredFeature),
+            (concat!("ff0100000000000002", "00"), DecodeError::UnknownRequiredFeature),
         ];
 
         for vector in test_vectors {
             let mut buff = Cursor::new(hex::decode(vector.0).expect("input"));
-            let stream: TLVStream = Readable::read(&mut buff).expect("no failure");
-            assert_eq!(stream.to_string(), vector.0);
+            let expected: Result<TLVStream, DecodeError> = Readable::read(&mut buff);
+            assert_eq!(expected.unwrap_err(), vector.1);
         }
     }
 
     #[test]
     fn tlv_stream_decode_failure_n1_namespace() {
+        // TODO: figure out how to check whether a stream is minimally encoded or not
         let test_vectors = [
-            (concat!("01", "09", "ffffffffffffffffff"), "greater than encoding length for n1s tlv1."),
-            (concat!("01", "01", "00"), "encoding for n1s tlv1s amount_msat is not minimal"),
-            (concat!("01", "02", "0001"), "encoding for n1s tlv1s amount_msat is not minimal"),
-            (concat!("01", "03", "000100"), "encoding for n1s tlv1s amount_msat is not minimal"),
-            (concat!("01", "04", "00010000"), "encoding for n1s tlv1s amount_msat is not minimal"),
-            (concat!("01", "05", "0001000000"), "encoding for n1s tlv1s amount_msat is not minimal"),
-            (concat!("01", "06", "000100000000"), "encoding for n1s tlv1s amount_msat is not minimal"),
-            (concat!("01", "07", "00010000000000"), "encoding for n1s tlv1s amount_msat is not minimal"),
-            (concat!("01", "08", "0001000000000000"), "encoding for n1s tlv1s amount_msat is not minimal"),
-            (concat!("02", "07", "01010101010101"), "less than encoding length for n1s tlv2."),
-            (concat!("02", "09", "010101010101010101"), "greater than encoding length for n1s tlv2."),
+            (concat!("01", "09", "ffffffffffffffffff"), DecodeError::InvalidData),
+            (concat!("01", "01", "00"), DecodeError::InvalidData),
+            (concat!("01", "02", "0001"), DecodeError::InvalidData),
+            (concat!("01", "03", "000100"), DecodeError::InvalidData),
+            (concat!("01", "04", "00010000"), DecodeError::InvalidData),
+            (concat!("01", "05", "0001000000"), DecodeError::InvalidData),
+            (concat!("01", "06", "000100000000"), DecodeError::InvalidData),
+            (concat!("01", "07", "00010000000000"), DecodeError::InvalidData),
+            (concat!("01", "08", "0001000000000000"), DecodeError::InvalidData),
+            (concat!("02", "07", "01010101010101"), DecodeError::ShortRead),
+            (concat!("02", "09", "010101010101010101"), DecodeError::InvalidData),
             (concat!("03", "21", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb"),
-            "less than encoding length for n1s tlv3."),
+            DecodeError::ShortRead),
             (concat!("03", "29", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001"),
-            "less than encoding length for n1s tlv3."),
+            DecodeError::ShortRead),
             (concat!("03", "30", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb000000000000000100000000000001"),
-            "less than encoding length for n1s tlv3."),
+            DecodeError::ShortRead),
             (concat!("03", "31", "043da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb00000000000000010000000000000002"),
-            "n1s node_id is not a valid point."),
+            DecodeError::InvalidData),
             (concat!("03", "32", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001000000000000000001"),
-            "greater than encoding length for n1s tlv3."),
-            (concat!("fd00fe", "00"), "less than encoding length for n1s tlv4."),
-            (concat!("fd00fe", "01", "01"), "less than encoding length for n1s tlv4."),
-            (concat!("fd00fe", "03", "010101"), "greater than encoding length for n1s tlv4."),
-            (concat!("00", "00"), "unknown even field for n1s namespace."),
-            ];
+            DecodeError::InvalidData),
+            (concat!("fd00fe", "00"), DecodeError::ShortRead),
+            (concat!("fd00fe", "01", "01"), DecodeError::ShortRead),
+            (concat!("fd00fe", "03", "010101"), DecodeError::InvalidData),
+            (concat!("00", "00"), DecodeError::UnknownRequiredFeature),
+        ];
+
+        for vector in test_vectors {
+            println!("{}", vector.0);
+            let mut buff = Cursor::new(hex::decode(vector.0).expect("input"));
+            let expected: Result<TLVStream, DecodeError> = Readable::read(&mut buff);
+            assert_eq!(expected.unwrap_err(), vector.1);
+        }
     }
 
     /// Any appending of an invalid stream to a valid stream should trigger a decoding failure.

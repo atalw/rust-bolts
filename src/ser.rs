@@ -6,6 +6,7 @@ pub enum DecodeError {
     TryFrom,
     ShortRead,
     InvalidData,
+    UnknownRequiredFeature,
 }
 
 impl std::error::Error for DecodeError {}
@@ -25,6 +26,7 @@ impl fmt::Display for DecodeError {
             DecodeError::TryFrom => write!(f, "conversion error"),
             DecodeError::ShortRead => write!(f, "short read"),
             DecodeError::InvalidData => write!(f, "invalid data"),
+            DecodeError::UnknownRequiredFeature => write!(f, "unknown required feature"),
         }
     }
 }
@@ -97,4 +99,30 @@ impl FixedLengthReadable for Vec<u8> {
         reader.read_exact(&mut bytes).map_err(|_| DecodeError::ShortRead)?;
         Ok(bytes)
     }
+}
+
+/// Picked up from rust-lightning
+/// A Read which tracks whether any bytes have been read at all. This allows us to distinguish
+/// between "EOF reached before we started" and "EOF reached mid-read".
+pub(crate) struct ReadTrackingReader<R: Read> {
+	read: R,
+	pub have_read: bool,
+}
+impl<R: Read> ReadTrackingReader<R> {
+	pub fn new(read: R) -> Self {
+		Self { read, have_read: false }
+	}
+}
+impl<R: Read> Read for ReadTrackingReader<R> {
+	#[inline]
+	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
+		match self.read.read(dest) {
+			Ok(0) => Ok(0),
+			Ok(len) => {
+				self.have_read = true;
+				Ok(len)
+			},
+			Err(e) => Err(e),
+		}
+	}
 }
