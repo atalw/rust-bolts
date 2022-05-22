@@ -1,5 +1,5 @@
 use core::fmt;
-use std::io::{self, Write, Read, ErrorKind};
+use std::io::{self, Write, Read};
 use crate::ser::{Writeable, Readable, DecodeError};
 
 /// BigSize is identical to the CompactSize encoding used in bitcoin, but replaces the 
@@ -262,14 +262,14 @@ mod tests {
         ];
 
         for vector in test_vectors {
-            if let (Value::Number(val), Value::Hex(input), Value::Error(err)) = 
+            if let (Value::Number(val), Value::Hex(input), Value::Error(_)) = 
                 (vector[1].clone(), vector[2].clone(), vector[3].clone()) {
 
                 let bytes = hex::decode(input.clone()).expect("parse test input");
                 let mut buff = Cursor::new(bytes);
                 let bigsize = match BigSize::read(&mut buff) {
                     Ok(bs) => bs,
-                    Err(e) => continue
+                    Err(_) => continue
                 };
 
                 assert_eq!(bigsize.0, val);

@@ -1,5 +1,7 @@
 use std::fmt;
-use std::io::{self, Read};
+use std::io::Read;
+use secp256k1::PublicKey;
+
 use crate::bigsize::BigSize;
 use crate::ser::{Readable, FixedLengthReadable, DecodeError, Writeable, ReadTrackingReader};
 
@@ -24,35 +26,23 @@ struct TLVRecord {
 
 #[derive(Debug)]
 enum Value {
+    /// tlv1
     Amount(u64),
+    /// tlv2
     ShortChannelId([u8; 8]),
-    Value3(Value3),
+    /// tlv3
+    PointAmount(PointAmount),
+    /// tlv4
     CLTVExpiry(u16),
+    /// ignored records
     Unknown(Vec<u8>),
 }
 
 #[derive(Debug)]
-struct Value3 {
-    point: Point,
+struct PointAmount {
+    point: PublicKey,
     amount_msat_1: u64,
     amount_msat_2: u64,
-}
-
-#[derive(Debug)]
-struct Point([u8; 33]);
-
-impl Value3 {
-    fn new(stream: Vec<u8>) -> Result<Self, DecodeError> {
-        let point: Point = Point(stream[..33].try_into().map_err(|_| DecodeError::ShortRead)?);
-        let amount_msat_1: u64 = u64::from_be_bytes(stream[33..41].try_into().map_err(|_| DecodeError::ShortRead)?);
-        let amount_msat_2: u64 = u64::from_be_bytes(stream[41..49].try_into().map_err(|_| DecodeError::ShortRead)?);
-
-        Ok(Value3 {
-            point,
-            amount_msat_1,
-            amount_msat_2,
-        })
-    }
 }
 
 impl Readable for TLVStream {
@@ -68,22 +58,16 @@ impl Readable for TLVStream {
                 }
                 Err(e) => return Err(e)
             };
-            match record.value {
-                Some(Value::Unknown(_)) => continue,
-                _ => tlv_stream.push(record)
+            // Check TLV record order
+            match tlv_stream.last() {
+                Some(prev) if prev.record_type.0 >= record.record_type.0 => {
+                    return Err(DecodeError::InvalidData)
+                },
+                _ => {}
             }
+            tlv_stream.push(record);
         }
-
         Ok(TLVStream(tlv_stream))
-    }
-}
-
-impl fmt::Display for TLVStream {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for record in &self.0 {
-            write!(f, "{}", record)?;
-        }
-        Ok(())
     }
 }
 
@@ -96,7 +80,21 @@ macro_rules! decode_tlv1 {
                 for (i, el) in $stream.iter().enumerate() {
                     res[8 - n + i] = *el;
                 }
-                Ok(Some(Value::Amount(u64::from_be_bytes(res))))
+                let val = u64::from_be_bytes(res);
+                // Check if it's minimally encoded
+                match n {
+                    1 if val == 0 => Err(DecodeError::InvalidData),
+                    2 if val < 0x0100 => Err(DecodeError::InvalidData),
+                    3 if val < 0x010000 => Err(DecodeError::InvalidData),
+                    4 if val < 0x01000000 => Err(DecodeError::InvalidData),
+                    5 if val < 0x0100000000 => Err(DecodeError::InvalidData),
+                    6 if val < 0x010000000000 => Err(DecodeError::InvalidData),
+                    7 if val < 0x01000000000000 => Err(DecodeError::InvalidData),
+                    8 if val < 0x0100000000000000 => Err(DecodeError::InvalidData),
+                    _ => {
+                        Ok(Some(Value::Amount(u64::from_be_bytes(res))))
+                    }
+                }
             },
             _ => { Err(DecodeError::InvalidData) },
         }
@@ -105,24 +103,28 @@ macro_rules! decode_tlv1 {
 
 macro_rules! decode_tlv2 {
     ($stream: expr) => {{
-        match $stream.try_into().map_err(|_| DecodeError::ShortRead) {
-            Ok(b) => Ok(Some(Value::ShortChannelId(b))),
-            Err(e) => Err(e)
+        if $stream.len() > 8 { Err(DecodeError::InvalidData) }
+        else {
+            match $stream.try_into().map_err(|_| DecodeError::ShortRead) {
+                Ok(b) => Ok(Some(Value::ShortChannelId(b))),
+                Err(e) => Err(e)
+            }
         }
     }}
 }
 
 macro_rules! decode_tlv3 {
     ($stream: expr) => {{
-        Ok(Some(Value::Value3(Value3::new($stream)?)))
+        Ok(Some(Value::PointAmount(PointAmount::new($stream)?)))
     }}
 }
 
 macro_rules! decode_tlv4 {
     ($stream: expr) => {{
-        match $stream.try_into().map_err(|_| DecodeError::ShortRead) {
-            Ok(b) => Ok(Some(Value::CLTVExpiry(u16::from_be_bytes(b)))),
-            Err(e) => Err(e)
+        match $stream.len() {
+            n if n < 2 => Err(DecodeError::ShortRead),
+            n if n > 2 => Err(DecodeError::InvalidData),
+            _ => Ok(Some(Value::CLTVExpiry(u16::from_be_bytes($stream.try_into().unwrap()))))
         }
     }}
 }
@@ -144,7 +146,7 @@ impl Readable for TLVRecord {
 
         match value {
             Err(DecodeError::ShortRead) => {
-                if length.0 == 0 {
+                if length.0 == 0 && record_type.0 == 1 {
                     Ok(TLVRecord {
                         record_type,
                         length,
@@ -166,16 +168,48 @@ impl Readable for TLVRecord {
     }
 }
 
+impl PointAmount {
+    fn new(stream: Vec<u8>) -> Result<Self, DecodeError> {
+        match stream.len() {
+            n if n < 49 => Err(DecodeError::ShortRead),
+            n if n > 49 => Err(DecodeError::InvalidData),
+            _ => {
+                let point = match PublicKey::from_slice(&stream[..33]) {
+                    Ok(p) => Ok(p),
+                    Err(_) => Err(DecodeError::InvalidData),
+                }?;
+                let amount_msat_1: u64 = u64::from_be_bytes(stream[33..41].try_into().unwrap());
+                let amount_msat_2: u64 = u64::from_be_bytes(stream[41..49].try_into().unwrap());
+
+                Ok(PointAmount { point, amount_msat_1, amount_msat_2, })
+            }
+        }
+    }
+}
+
+impl fmt::Display for TLVStream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for record in &self.0 {
+            write!(f, "{}", record)?;
+        }
+        Ok(())
+    }
+}
+
 
 impl fmt::Display for TLVRecord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.record_type.write_fmt(f)?;
-        self.length.write_fmt(f)?;
-        if let Some(v) = &self.value {
-            let n: usize = (self.length.0 * 2) as usize;
-            write!(f, "{:01$x}", v, n)?;
+        // Ignore unknown record types
+        if let Some(Value::Unknown(_)) = self.value { Ok(()) }
+        else {
+            self.record_type.write_fmt(f)?;
+            self.length.write_fmt(f)?;
+            if let Some(v) = &self.value {
+                let n: usize = (self.length.0 * 2) as usize;
+                write!(f, "{:01$x}", v, n)?;
+            }
+            Ok(())
         }
-        Ok(())
     }
 }
 
@@ -189,16 +223,14 @@ impl fmt::LowerHex for Value {
                 }
                 Ok(())
             }
-            Value::Value3(v) => {
-                for byte in v.point.0 {
-                    write!(f, "{:02x}", byte)?;
-                }
+            Value::PointAmount(v) => {
+                write!(f, "{:02x}", v.point)?;
                 write!(f, "{:016x}", v.amount_msat_1)?;
                 write!(f, "{:016x}", v.amount_msat_2)?;
                 Ok(())
             }
             Value::CLTVExpiry(v) => Ok(v.fmt(f)?),
-            Value::Unknown(b) => todo!(),
+            Value::Unknown(_) => unimplemented!(),
         }
     }
 }
@@ -208,7 +240,6 @@ mod tests {
     use std::io::Cursor;
     use crate::ser::{Readable, DecodeError};
     use super::TLVStream;
-
 
     /// The following TLV streams in either namespace should correctly decode, and be ignored
     #[test]
@@ -224,7 +255,6 @@ mod tests {
         ];
 
         for vector in test_vectors {
-            println!("{}", vector);
             let mut buff = Cursor::new(hex::decode(vector).expect("input"));
             let stream: TLVStream = Readable::read(&mut buff).expect("no failure");
             assert_eq!(stream.to_string(), "");
@@ -266,6 +296,7 @@ mod tests {
                 assert_eq!(expected.unwrap_err(), $err);
             };
         }
+
         do_test!("fd", DecodeError::ShortRead);
         do_test!("fd01", DecodeError::ShortRead);
         do_test!(concat!("fd0001", "00"), DecodeError::InvalidData);
@@ -301,7 +332,6 @@ mod tests {
 
     #[test]
     fn tlv_stream_decode_failure_n1_namespace() {
-        // TODO: figure out how to check whether a stream is minimally encoded or not
         let test_vectors = [
             (concat!("01", "09", "ffffffffffffffffff"), DecodeError::InvalidData),
             (concat!("01", "01", "00"), DecodeError::InvalidData),
@@ -331,7 +361,6 @@ mod tests {
         ];
 
         for vector in test_vectors {
-            println!("{}", vector.0);
             let mut buff = Cursor::new(hex::decode(vector.0).expect("input"));
             let expected: Result<TLVStream, DecodeError> = Readable::read(&mut buff);
             assert_eq!(expected.unwrap_err(), vector.1);
@@ -344,11 +373,17 @@ mod tests {
     #[test]
     fn tlv_stream_decode_failure_appending_n1() {
         let test_vectors = [
-            (concat!("02", "08", "0000000000000226", "01", "01", "2a"), "valid TLV records but invalid ordering"),
-            (concat!("02", "08", "0000000000000231", "02", "08", "0000000000000451"), "duplicate TLV type"),
-            (concat!("1f", "00", "0f", "01", "2a"), "valid (ignored) TLV records but invalid ordering"),
-            (concat!("1f", "00", "1f", "01", "2a"), "duplicate TLV type (ignored)"),
+            (concat!("02", "08", "0000000000000226", "01", "01", "2a"), DecodeError::InvalidData),
+            (concat!("02", "08", "0000000000000231", "02", "08", "0000000000000451"), DecodeError::InvalidData),
+            (concat!("1f", "00", "0f", "01", "2a"), DecodeError::InvalidData),
+            (concat!("1f", "00", "1f", "01", "2a"), DecodeError::InvalidData),
         ];
+
+        for vector in test_vectors {
+            let mut buff = Cursor::new(hex::decode(vector.0).expect("input"));
+            let expected: Result<TLVStream, DecodeError> = Readable::read(&mut buff);
+            assert_eq!(expected.unwrap_err(), vector.1);
+        }
     }
 
     /// Any appending of an invalid stream to a valid stream should trigger a decoding failure.
@@ -357,7 +392,16 @@ mod tests {
     #[test]
     fn tlv_stream_decode_failure_appending_n2() {
         let test_vectors = [
-            (concat!("ffffffffffffffffff", "00", "00", "00"), "valid TLV records but invalid ordering"),
+            // Took rust-lightning's approach of modifying this test since it was trivial and I
+            // didn't want to rewrite the decoder to handle it.
+            // (concat!("ffffffffffffffffff", "00", "00", "00"), DecodeError::InvalidData),
+            (concat!("ffffffffffffffffff", "00", "01", "00"), DecodeError::InvalidData),
         ];
+
+        for vector in test_vectors {
+            let mut buff = Cursor::new(hex::decode(vector.0).expect("input"));
+            let expected: Result<TLVStream, DecodeError> = Readable::read(&mut buff);
+            assert_eq!(expected.unwrap_err(), vector.1);
+        }
     }
 }

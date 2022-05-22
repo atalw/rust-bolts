@@ -3,7 +3,6 @@ use std::{io::{self, Write, Read}, fmt};
 #[derive(Debug, PartialEq)]
 pub enum DecodeError {
     Io(io::ErrorKind),
-    TryFrom,
     ShortRead,
     InvalidData,
     UnknownRequiredFeature,
@@ -11,19 +10,10 @@ pub enum DecodeError {
 
 impl std::error::Error for DecodeError {}
 
-// impl fmt::Debug for DecodeError {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         match *self {
-//             _ => write!(f, "hello")
-//         }
-//     }
-// }
-
 impl fmt::Display for DecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             DecodeError::Io(e) => write!(f, "{:?}", e),
-            DecodeError::TryFrom => write!(f, "conversion error"),
             DecodeError::ShortRead => write!(f, "short read"),
             DecodeError::InvalidData => write!(f, "invalid data"),
             DecodeError::UnknownRequiredFeature => write!(f, "unknown required feature"),
