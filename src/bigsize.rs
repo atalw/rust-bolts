@@ -261,7 +261,7 @@ mod tests {
         ];
 
         for vector in test_vectors {
-            if let (Value::Number(val), Value::Hex(input), Value::Error(err)) = 
+            if let (Value::Number(val), Value::Hex(input), Value::Error(err)) =
                 (vector[1].clone(), vector[2].clone(), vector[3].clone()) {
 
                 let bytes = hex::decode(input.clone()).expect("parse test input");

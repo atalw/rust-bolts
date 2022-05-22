@@ -19,7 +19,7 @@ struct TLVRecord {
     record_type: BigSize,
     /// The size of value in bytes.
     length: BigSize,
-    /// Depends on `type`, and should be encoded or decoded according to the message-specific 
+    /// Depends on `type`, and should be encoded or decoded according to the message-specific
     /// format determined by `type`.
     value: Option<Value>
 }
@@ -58,7 +58,8 @@ impl Readable for TLVStream {
                 }
                 Err(e) => return Err(e)
             };
-            // Check TLV record order
+            // All types must appear in increasing order to create a canonical encoding of the
+            // underlying tlv_records
             match tlv_stream.last() {
                 Some(prev) if prev.record_type.0 >= record.record_type.0 => {
                     return Err(DecodeError::InvalidData)
@@ -287,25 +288,25 @@ mod tests {
         }
     }
 
+    macro_rules! do_test_err {
+        ($stream: expr, $err: expr) => {
+            let mut buff = Cursor::new(hex::decode($stream).expect("input"));
+            let expected: Result<TLVStream, DecodeError> = Readable::read(&mut buff);
+            assert_eq!(expected.unwrap_err(), $err);
+        };
+    }
+
     #[test]
     fn tlv_stream_decode_failure_any_namespace() {
-        macro_rules! do_test {
-            ($stream: expr, $err: expr) => {
-                let mut buff = Cursor::new(hex::decode($stream).expect("input"));
-                let expected: Result<TLVStream, DecodeError> = Readable::read(&mut buff);
-                assert_eq!(expected.unwrap_err(), $err);
-            };
-        }
-
-        do_test!("fd", DecodeError::ShortRead);
-        do_test!("fd01", DecodeError::ShortRead);
-        do_test!(concat!("fd0001", "00"), DecodeError::InvalidData);
-        do_test!("fd0101", DecodeError::ShortRead);
-        do_test!(concat!("0f", "fd"), DecodeError::ShortRead);
-        do_test!(concat!("0f", "fd26"), DecodeError::ShortRead);
-        do_test!(concat!("0f", "fd2602"), DecodeError::ShortRead);
-        do_test!(concat!("0f", "fd0001", "00"), DecodeError::InvalidData);
-        do_test!(concat!("0f", "fd0201", "000000000000000000000000000000000000000000000000000000000\
+        do_test_err!("fd", DecodeError::ShortRead);
+        do_test_err!("fd01", DecodeError::ShortRead);
+        do_test_err!(concat!("fd0001", "00"), DecodeError::InvalidData);
+        do_test_err!("fd0101", DecodeError::ShortRead);
+        do_test_err!(concat!("0f", "fd"), DecodeError::ShortRead);
+        do_test_err!(concat!("0f", "fd26"), DecodeError::ShortRead);
+        do_test_err!(concat!("0f", "fd2602"), DecodeError::ShortRead);
+        do_test_err!(concat!("0f", "fd0001", "00"), DecodeError::InvalidData);
+        do_test_err!(concat!("0f", "fd0201", "000000000000000000000000000000000000000000000000000000000\
         0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
         0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
         0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\
@@ -316,55 +317,39 @@ mod tests {
 
     #[test]
     fn tlv_stream_decode_failure_either_namespace() {
-        let test_vectors = [
-            (concat!("12", "00"), DecodeError::UnknownRequiredFeature),
-            (concat!("fd0102", "00"), DecodeError::UnknownRequiredFeature),
-            (concat!("fe01000002", "00"), DecodeError::UnknownRequiredFeature),
-            (concat!("ff0100000000000002", "00"), DecodeError::UnknownRequiredFeature),
-        ];
-
-        for vector in test_vectors {
-            let mut buff = Cursor::new(hex::decode(vector.0).expect("input"));
-            let expected: Result<TLVStream, DecodeError> = Readable::read(&mut buff);
-            assert_eq!(expected.unwrap_err(), vector.1);
-        }
+        do_test_err!(concat!("12", "00"), DecodeError::UnknownRequiredFeature);
+        do_test_err!(concat!("fd0102", "00"), DecodeError::UnknownRequiredFeature);
+        do_test_err!(concat!("fe01000002", "00"), DecodeError::UnknownRequiredFeature);
+        do_test_err!(concat!("ff0100000000000002", "00"), DecodeError::UnknownRequiredFeature);
     }
 
     #[test]
     fn tlv_stream_decode_failure_n1_namespace() {
-        let test_vectors = [
-            (concat!("01", "09", "ffffffffffffffffff"), DecodeError::InvalidData),
-            (concat!("01", "01", "00"), DecodeError::InvalidData),
-            (concat!("01", "02", "0001"), DecodeError::InvalidData),
-            (concat!("01", "03", "000100"), DecodeError::InvalidData),
-            (concat!("01", "04", "00010000"), DecodeError::InvalidData),
-            (concat!("01", "05", "0001000000"), DecodeError::InvalidData),
-            (concat!("01", "06", "000100000000"), DecodeError::InvalidData),
-            (concat!("01", "07", "00010000000000"), DecodeError::InvalidData),
-            (concat!("01", "08", "0001000000000000"), DecodeError::InvalidData),
-            (concat!("02", "07", "01010101010101"), DecodeError::ShortRead),
-            (concat!("02", "09", "010101010101010101"), DecodeError::InvalidData),
-            (concat!("03", "21", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb"),
-            DecodeError::ShortRead),
-            (concat!("03", "29", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001"),
-            DecodeError::ShortRead),
-            (concat!("03", "30", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb000000000000000100000000000001"),
-            DecodeError::ShortRead),
-            (concat!("03", "31", "043da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb00000000000000010000000000000002"),
-            DecodeError::InvalidData),
-            (concat!("03", "32", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001000000000000000001"),
-            DecodeError::InvalidData),
-            (concat!("fd00fe", "00"), DecodeError::ShortRead),
-            (concat!("fd00fe", "01", "01"), DecodeError::ShortRead),
-            (concat!("fd00fe", "03", "010101"), DecodeError::InvalidData),
-            (concat!("00", "00"), DecodeError::UnknownRequiredFeature),
-        ];
-
-        for vector in test_vectors {
-            let mut buff = Cursor::new(hex::decode(vector.0).expect("input"));
-            let expected: Result<TLVStream, DecodeError> = Readable::read(&mut buff);
-            assert_eq!(expected.unwrap_err(), vector.1);
-        }
+        do_test_err!(concat!("01", "09", "ffffffffffffffffff"), DecodeError::InvalidData);
+        do_test_err!(concat!("01", "01", "00"), DecodeError::InvalidData);
+        do_test_err!(concat!("01", "02", "0001"), DecodeError::InvalidData);
+        do_test_err!(concat!("01", "03", "000100"), DecodeError::InvalidData);
+        do_test_err!(concat!("01", "04", "00010000"), DecodeError::InvalidData);
+        do_test_err!(concat!("01", "05", "0001000000"), DecodeError::InvalidData);
+        do_test_err!(concat!("01", "06", "000100000000"), DecodeError::InvalidData);
+        do_test_err!(concat!("01", "07", "00010000000000"), DecodeError::InvalidData);
+        do_test_err!(concat!("01", "08", "0001000000000000"), DecodeError::InvalidData);
+        do_test_err!(concat!("02", "07", "01010101010101"), DecodeError::ShortRead);
+        do_test_err!(concat!("02", "09", "010101010101010101"), DecodeError::InvalidData);
+        do_test_err!(concat!("03", "21", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb"),
+        DecodeError::ShortRead);
+        do_test_err!(concat!("03", "29", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001"),
+        DecodeError::ShortRead);
+        do_test_err!(concat!("03", "30", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb000000000000000100000000000001"),
+        DecodeError::ShortRead);
+        do_test_err!(concat!("03", "31", "043da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb00000000000000010000000000000002"),
+        DecodeError::InvalidData);
+        do_test_err!(concat!("03", "32", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001000000000000000001"),
+        DecodeError::InvalidData);
+        do_test_err!(concat!("fd00fe", "00"), DecodeError::ShortRead);
+        do_test_err!(concat!("fd00fe", "01", "01"), DecodeError::ShortRead);
+        do_test_err!(concat!("fd00fe", "03", "010101"), DecodeError::InvalidData);
+        do_test_err!(concat!("00", "00"), DecodeError::UnknownRequiredFeature);
     }
 
     /// Any appending of an invalid stream to a valid stream should trigger a decoding failure.
@@ -372,18 +357,10 @@ mod tests {
     /// trigger a decoding failure.
     #[test]
     fn tlv_stream_decode_failure_appending_n1() {
-        let test_vectors = [
-            (concat!("02", "08", "0000000000000226", "01", "01", "2a"), DecodeError::InvalidData),
-            (concat!("02", "08", "0000000000000231", "02", "08", "0000000000000451"), DecodeError::InvalidData),
-            (concat!("1f", "00", "0f", "01", "2a"), DecodeError::InvalidData),
-            (concat!("1f", "00", "1f", "01", "2a"), DecodeError::InvalidData),
-        ];
-
-        for vector in test_vectors {
-            let mut buff = Cursor::new(hex::decode(vector.0).expect("input"));
-            let expected: Result<TLVStream, DecodeError> = Readable::read(&mut buff);
-            assert_eq!(expected.unwrap_err(), vector.1);
-        }
+        do_test_err!(concat!("02", "08", "0000000000000226", "01", "01", "2a"), DecodeError::InvalidData);
+        do_test_err!(concat!("02", "08", "0000000000000231", "02", "08", "0000000000000451"), DecodeError::InvalidData);
+        do_test_err!(concat!("1f", "00", "0f", "01", "2a"), DecodeError::InvalidData);
+        do_test_err!(concat!("1f", "00", "1f", "01", "2a"), DecodeError::InvalidData);
     }
 
     /// Any appending of an invalid stream to a valid stream should trigger a decoding failure.
@@ -391,17 +368,9 @@ mod tests {
     /// trigger a decoding failure.
     #[test]
     fn tlv_stream_decode_failure_appending_n2() {
-        let test_vectors = [
-            // Took rust-lightning's approach of modifying this test since it was trivial and I
-            // didn't want to rewrite the decoder to handle it.
-            // (concat!("ffffffffffffffffff", "00", "00", "00"), DecodeError::InvalidData),
-            (concat!("ffffffffffffffffff", "00", "01", "00"), DecodeError::InvalidData),
-        ];
-
-        for vector in test_vectors {
-            let mut buff = Cursor::new(hex::decode(vector.0).expect("input"));
-            let expected: Result<TLVStream, DecodeError> = Readable::read(&mut buff);
-            assert_eq!(expected.unwrap_err(), vector.1);
-        }
+        // Took rust-lightning's approach of modifying this test since it was trivial and I
+        // didn't want to rewrite the decoder to handle it.
+        // (concat!("ffffffffffffffffff", "00", "00", "00"), DecodeError::InvalidData),
+        do_test_err!(concat!("ffffffffffffffffff", "00", "01", "00"), DecodeError::InvalidData);
     }
 }
