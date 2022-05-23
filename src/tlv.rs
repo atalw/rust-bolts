@@ -8,7 +8,7 @@ use crate::ser::{Readable, FixedLengthReadable, DecodeError, Writeable, ReadTrac
 /// A tlv_stream is a series of (possibly zero) tlv_records, represented as the concatenation of
 /// the encoded tlv_records.
 #[derive(Debug)]
-struct TLVStream(Vec<TLVRecord>);
+pub struct TLVStream(Vec<TLVRecord>);
 
 #[derive(Debug)]
 struct TLVRecord {
