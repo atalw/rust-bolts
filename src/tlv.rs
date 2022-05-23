@@ -200,17 +200,13 @@ impl fmt::Display for TLVStream {
 
 impl fmt::Display for TLVRecord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Ignore unknown record types
-        if let Some(Value::Unknown(_)) = self.value { Ok(()) }
-        else {
-            self.record_type.write_fmt(f)?;
-            self.length.write_fmt(f)?;
-            if let Some(v) = &self.value {
-                let n: usize = (self.length.0 * 2) as usize;
-                write!(f, "{:01$x}", v, n)?;
-            }
-            Ok(())
+        self.record_type.write_fmt(f)?;
+        self.length.write_fmt(f)?;
+        if let Some(v) = &self.value {
+            let n: usize = (self.length.0 * 2) as usize;
+            write!(f, "{:01$x}", v, n)?;
         }
+        Ok(())
     }
 }
 
@@ -231,7 +227,12 @@ impl fmt::LowerHex for Value {
                 Ok(())
             }
             Value::CLTVExpiry(v) => Ok(v.fmt(f)?),
-            Value::Unknown(_) => unimplemented!(),
+            Value::Unknown(b) => {
+                for byte in b {
+                    write!(f, "{:02x}", byte)?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -239,7 +240,7 @@ impl fmt::LowerHex for Value {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
-    use crate::ser::{Readable, DecodeError};
+    use crate::{ser::{Readable, DecodeError}, tlv::Value};
     use super::TLVStream;
 
     /// The following TLV streams in either namespace should correctly decode, and be ignored
@@ -258,7 +259,12 @@ mod tests {
         for vector in test_vectors {
             let mut buff = Cursor::new(hex::decode(vector).expect("input"));
             let stream: TLVStream = Readable::read(&mut buff).expect("no failure");
-            assert_eq!(stream.to_string(), "");
+            if !vector.is_empty() {
+                assert_eq!(stream.0.len(), 1);
+                if let Some(Value::Unknown(v)) = &stream.0[0].value {
+                    assert_eq!(stream.to_string(), vector);
+                } else { panic!() }
+            }
         }
     }
 

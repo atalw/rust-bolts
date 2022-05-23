@@ -1,10 +1,11 @@
-use std::io::Read;
+use std::{io::Read, fmt};
 
-use crate::{tlv::TLVStream, ser::{Readable, DecodeError}};
+use crate::{tlv::TLVStream, ser::{Readable, DecodeError, FixedLengthReadable}};
 
 
 /// Once authentication is complete, the first message reveals the features supported or required
 /// by this node, even if this is a reconnection.
+#[derive(Debug)]
 pub struct Init {
     typ: u16,
     /// Global features length
@@ -59,7 +60,42 @@ pub struct Pong {
 
 impl Readable for Init {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-        todo!()
+        let typ: u16 = Readable::read(reader)?;
+        let gflen: u16 = Readable::read(reader)?;
+        let global_features: Vec<u8> = FixedLengthReadable::read(reader, gflen as usize)?;
+        let flen: u16 = Readable::read(reader)?;
+        let features: Vec<u8> = FixedLengthReadable::read(reader, flen as usize)?;
+        let init_tlvs: TLVStream = Readable::read(reader)?;
+
+        Ok(Init {
+            typ,
+            gflen,
+            global_features,
+            flen,
+            features,
+            init_tlvs
+        })
+    }
+}
+
+impl fmt::Display for Init {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:02x}", self)
+    }
+}
+
+impl fmt::LowerHex for Init {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:04x}", self.typ)?;
+        write!(f, "{:04x}", self.gflen)?;
+        for byte in &self.global_features {
+            write!(f, "{:02x}", byte)?;
+        }
+        write!(f, "{:04x}", self.flen)?;
+        for byte in &self.features {
+            write!(f, "{:02x}", byte)?;
+        }
+        write!(f, "{}", self.init_tlvs)
     }
 }
 
@@ -79,7 +115,7 @@ mod tests {
         for vector in test_vectors {
             let mut buff = Cursor::new(hex::decode(vector).expect("input"));
             let msg: Init = Readable::read(&mut buff).expect("no failure");
-            assert_eq!(msg.to_string(), "");
+            assert_eq!(msg.to_string(), vector);
         }
     }
 
